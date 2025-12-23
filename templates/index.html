@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Drive Video Player</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f0f0f;
+            color: #fff;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #212121;
+            padding: 15px 0;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            margin-bottom: 20px;
+        }
+
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        h1 {
+            font-size: 24px;
+            color: #ff0000;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .icon {
+            font-size: 28px;
+        }
+
+        .url-input-container {
+            flex: 1;
+            display: flex;
+            gap: 10px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 12px 15px;
+            border: 2px solid #303030;
+            background: #121212;
+            color: #fff;
+            border-radius: 25px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            border-color: #ff0000;
+        }
+
+        button {
+            padding: 12px 30px;
+            background: #ff0000;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #cc0000;
+        }
+
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .breadcrumb-item {
+            color: #aaa;
+            cursor: pointer;
+            padding: 8px 12px;
+            border-radius: 5px;
+            transition: all 0.3s;
+        }
+
+        .breadcrumb-item:hover {
+            background: #303030;
+            color: #fff;
+        }
+
+        .breadcrumb-separator {
+            color: #555;
+        }
+
+        .video-player-container {
+            display: none;
+            margin-bottom: 30px;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+
+        .video-player-container.active {
+            display: block;
+        }
+
+        video {
+            width: 100%;
+            max-height: 70vh;
+            display: block;
+        }
+
+        .video-info {
+            padding: 20px;
+            background: #212121;
+        }
+
+        .video-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .video-controls {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .control-btn {
+            padding: 8px 20px;
+            background: #303030;
+            border-radius: 5px;
+            font-size: 13px;
+        }
+
+        .control-btn:hover {
+            background: #404040;
+        }
+
+        .file-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .file-item {
+            background: #212121;
+            border-radius: 12px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .file-item:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+        }
+
+        .file-thumbnail {
+            width: 100%;
+            height: 160px;
+            background: #303030;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+            position: relative;
+        }
+
+        .file-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .file-thumbnail .play-icon {
+            position: absolute;
+            width: 60px;
+            height: 60px;
+            background: rgba(255, 0, 0, 0.9);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+
+        .file-info {
+            padding: 15px;
+        }
+
+        .file-name {
+            font-size: 15px;
+            font-weight: 500;
+            margin-bottom: 5px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-meta {
+            font-size: 13px;
+            color: #aaa;
+        }
+
+        .error {
+            background: #ff00001a;
+            border: 1px solid #ff0000;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            color: #ff6b6b;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            font-size: 18px;
+            color: #aaa;
+        }
+
+        .loading::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+
+        .welcome {
+            text-align: center;
+            padding: 60px 20px;
+            color: #aaa;
+        }
+
+        .welcome h2 {
+            font-size: 32px;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+
+        .welcome p {
+            font-size: 18px;
+            line-height: 1.8;
+            max-width: 600px;
+            margin: 0 auto 30px;
+        }
+
+        .welcome-icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+            }
+
+            .url-input-container {
+                width: 100%;
+            }
+
+            .file-grid {
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1><span class="icon">🎥</span> GDrive Player</h1>
+            <div class="url-input-container">
+                <input type="text" id="folderUrl" placeholder="Paste Google Drive shared folder link here..." />
+                <button id="loadBtn" onclick="loadFolder()">Load Folder</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="breadcrumb" class="breadcrumb" style="display: none;"></div>
+        
+        <div id="videoPlayer" class="video-player-container">
+            <video id="video" controls></video>
+            <div class="video-info">
+                <div class="video-title" id="videoTitle">Video Title</div>
+                <div class="video-controls">
+                    <button class="control-btn" onclick="changeSpeed(0.5)">0.5x</button>
+                    <button class="control-btn" onclick="changeSpeed(0.75)">0.75x</button>
+                    <button class="control-btn" onclick="changeSpeed(1)">Normal</button>
+                    <button class="control-btn" onclick="changeSpeed(1.25)">1.25x</button>
+                    <button class="control-btn" onclick="changeSpeed(1.5)">1.5x</button>
+                    <button class="control-btn" onclick="changeSpeed(2)">2x</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="welcome" class="welcome">
+            <div class="welcome-icon">📁</div>
+            <h2>Welcome to Google Drive Video Player</h2>
+            <p>
+                Paste a shared Google Drive folder link above to start browsing and watching videos 
+                in a YouTube-like interface. Navigate through folders, stream videos directly, 
+                and enjoy full playback controls!
+            </p>
+            <p style="font-size: 14px; margin-top: 20px;">
+                💡 Tip: Make sure the Google Drive folder is shared with "Anyone with the link can view"
+            </p>
+        </div>
+
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="loading" class="loading" style="display: none;">Loading</div>
+        <div id="fileGrid" class="file-grid"></div>
+    </div>
+
+    <script>
+        let currentFolderId = null;
+        let currentVideos = [];
+
+        async function loadFolder() {
+            const url = document.getElementById('folderUrl').value.trim();
+            if (!url) {
+                showError('Please enter a Google Drive folder URL');
+                return;
+            }
+
+            showLoading(true);
+            hideError();
+            document.getElementById('welcome').style.display = 'none';
+
+            try {
+                // Parse the URL to get folder ID
+                const response = await fetch('/api/parse-link', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({url})
+                });
+                const data = await response.json();
+
+                if (!data.success) {
+                    showError(data.error);
+                    showLoading(false);
+                    return;
+                }
+
+                currentFolderId = data.folder_id;
+                await loadFolderContents(currentFolderId);
+            } catch (error) {
+                showError('Error: ' + error.message);
+                showLoading(false);
+            }
+        }
+
+        async function loadFolderContents(folderId) {
+            showLoading(true);
+            hideError();
+
+            try {
+                const response = await fetch(`/api/folder/${folderId}`);
+                const data = await response.json();
+
+                if (!data.success) {
+                    showError(data.error);
+                    showLoading(false);
+                    return;
+                }
+
+                currentFolderId = folderId;
+                currentVideos = data.contents.videos;
+                renderBreadcrumb(data.path);
+                renderFiles(data.contents);
+                showLoading(false);
+            } catch (error) {
+                showError('Error loading folder: ' + error.message);
+                showLoading(false);
+            }
+        }
+
+        function renderBreadcrumb(path) {
+            const breadcrumb = document.getElementById('breadcrumb');
+            if (!path || path.length === 0) {
+                breadcrumb.style.display = 'none';
+                return;
+            }
+
+            breadcrumb.style.display = 'flex';
+            breadcrumb.innerHTML = path.map((item, index) => `
+                <span class="breadcrumb-item" onclick="loadFolderContents('${item.id}')">
+                    ${index === 0 ? '🏠' : ''} ${item.name}
+                </span>
+                ${index < path.length - 1 ? '<span class="breadcrumb-separator">›</span>' : ''}
+            `).join('');
+        }
+
+        function renderFiles(contents) {
+            const grid = document.getElementById('fileGrid');
+            const items = [...contents.folders, ...contents.videos];
+
+            if (items.length === 0) {
+                grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #aaa;">No files found in this folder</div>';
+                return;
+            }
+
+            grid.innerHTML = items.map(item => {
+                if (item.type === 'folder') {
+                    return `
+                        <div class="file-item" onclick="loadFolderContents('${item.id}')">
+                            <div class="file-thumbnail">📁</div>
+                            <div class="file-info">
+                                <div class="file-name">${escapeHtml(item.name)}</div>
+                                <div class="file-meta">Folder</div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    const duration = item.duration ? formatDuration(item.duration) : '';
+                    const size = item.size ? formatSize(item.size) : '';
+                    return `
+                        <div class="file-item" onclick="playVideo('${item.id}', '${escapeHtml(item.name)}')">
+                            <div class="file-thumbnail">
+                                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="${escapeHtml(item.name)}">` : '🎬'}
+                                <div class="play-icon">▶</div>
+                            </div>
+                            <div class="file-info">
+                                <div class="file-name">${escapeHtml(item.name)}</div>
+                                <div class="file-meta">${duration} ${size}</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            }).join('');
+        }
+
+        function playVideo(videoId, videoName) {
+            const playerContainer = document.getElementById('videoPlayer');
+            const video = document.getElementById('video');
+            const title = document.getElementById('videoTitle');
+
+            playerContainer.classList.add('active');
+            title.textContent = videoName;
+            video.src = `/api/stream/${videoId}`;
+            video.load();
+            video.play();
+
+            // Scroll to video player
+            playerContainer.scrollIntoView({behavior: 'smooth', block: 'start'});
+        }
+
+        function changeSpeed(speed) {
+            const video = document.getElementById('video');
+            video.playbackRate = speed;
+        }
+
+        function formatDuration(ms) {
+            const seconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+
+            if (hours > 0) {
+                return `${hours}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+            }
+            return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+        }
+
+        function formatSize(bytes) {
+            const mb = bytes / (1024 * 1024);
+            if (mb > 1024) {
+                return `${(mb / 1024).toFixed(1)} GB`;
+            }
+            return `${mb.toFixed(1)} MB`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function showError(message) {
+            const error = document.getElementById('error');
+            error.textContent = message;
+            error.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        // Allow Enter key to load folder
+        document.getElementById('folderUrl').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                loadFolder();
+            }
+        });
+
+        // Keyboard shortcuts for video
+        document.addEventListener('keydown', (e) => {
+            const video = document.getElementById('video');
+            const playerContainer = document.getElementById('videoPlayer');
+            
+            if (!playerContainer.classList.contains('active')) return;
+
+            switch(e.key) {
+                case ' ':
+                    e.preventDefault();
+                    video.paused ? video.play() : video.pause();
+                    break;
+                case 'ArrowLeft':
+                    video.currentTime -= 5;
+                    break;
+                case 'ArrowRight':
+                    video.currentTime += 5;
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    video.volume = Math.min(1, video.volume + 0.1);
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    video.volume = Math.max(0, video.volume - 0.1);
+                    break;
+                case 'f':
+                    video.requestFullscreen();
+                    break;
+                case 'm':
+                    video.muted = !video.muted;
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>
