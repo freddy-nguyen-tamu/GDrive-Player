@@ -344,13 +344,15 @@
         <div id="breadcrumb" class="breadcrumb" style="display: none;"></div>
 
         <div id="videoPlayer" class="video-player-container">
-            <video 
-                id="video" 
-                class="video-js vjs-big-play-centered vjs-fluid"
-                controls
-                playsinline
-                preload="auto">
-            </video>
+            <div id="videoPlayerWrapper">
+                <video 
+                    id="video" 
+                    class="video-js vjs-big-play-centered vjs-fluid"
+                    controls
+                    playsinline
+                    preload="auto">
+                </video>
+            </div>
             <div class="video-info">
                 <div class="video-title" id="videoTitle">Video Title</div>
             </div>
@@ -552,7 +554,7 @@
                 // Use backend proxy for reliable streaming
                 const mediaUrl = `/api/stream/${videoId}`;
 
-                // Dispose existing player if any
+                // Dispose existing player and recreate video element
                 if (player) {
                     try {
                         player.dispose();
@@ -562,10 +564,22 @@
                     }
                 }
 
-                // Wait a moment for DOM to be ready
-                await new Promise(resolve => setTimeout(resolve, 100));
+                // Recreate video element
+                const wrapper = document.getElementById('videoPlayerWrapper');
+                wrapper.innerHTML = `
+                    <video 
+                        id="video" 
+                        class="video-js vjs-big-play-centered vjs-fluid"
+                        controls
+                        playsinline
+                        preload="auto">
+                    </video>
+                `;
 
-                // Get video element
+                // Wait for DOM update
+                await new Promise(resolve => setTimeout(resolve, 50));
+
+                // Get fresh video element
                 const videoElement = document.getElementById('video');
                 if (!videoElement) {
                     throw new Error('Video element not found');
