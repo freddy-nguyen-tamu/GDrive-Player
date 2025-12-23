@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import os
 import pickle
 import re
@@ -19,11 +18,9 @@ app = Flask(__name__)
 CORS(app)
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-
 TOKEN_FILE = "token.pickle"
 CREDS_FILE = "credentials.json"
 
-# Keep a cached Drive service/credentials so you don't re-auth and rebuild on every request
 _auth_lock = threading.Lock()
 _cached_service = None
 _cached_creds: Optional[Credentials] = None
@@ -41,66 +38,54 @@ def _save_creds_to_disk(creds: Credentials) -> None:
         pickle.dump(creds, f)
 
 
-def get_drive_service() -> Tuple[Optional[Any], Optional[str]]:
-    """
-    Returns (service, error). service is googleapiclient.discovery.Resource.
-    Caches credentials/service for speed.
-    """
-    global _cached_service, _cached_creds
+def _ensure_creds() -> Tuple[Optional[Credentials], Optional[str]]:
+    global _cached_creds
 
     with _auth_lock:
-        # Fast path: cached and valid
-        if _cached_service is not None and _cached_creds is not None and _cached_creds.valid:
-            return _cached_service, None
-
         creds = _cached_creds or _load_creds_from_disk()
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(GoogleAuthRequest())
-                except Exception as e:
-                    # If refresh fails, force a new login flow
+                except Exception:
                     creds = None
+
             if not creds:
                 if not os.path.exists(CREDS_FILE):
                     return None, "Missing credentials.json file. Please follow setup instructions."
                 flow = InstalledAppFlow.from_client_secrets_file(CREDS_FILE, SCOPES)
-                # run_local_server uses an ephemeral localhost port; Desktop OAuth client is required.
                 creds = flow.run_local_server(port=0)
 
             _save_creds_to_disk(creds)
 
-        # Build and cache the Drive service
         _cached_creds = creds
-        _cached_service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        return _cached_service, None
+        return creds, None
 
 
 def _get_access_token() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Returns (token, error). Refreshes token if needed.
-    """
-    global _cached_creds
+    creds, err = _ensure_creds()
+    if err:
+        return None, err
+
+    if not creds.valid and creds.expired and creds.refresh_token:
+        creds.refresh(GoogleAuthRequest())
+        _save_creds_to_disk(creds)
+
+    return creds.token, None
+
+
+def get_drive_service() -> Tuple[Optional[Any], Optional[str]]:
+    global _cached_service
+
+    creds, err = _ensure_creds()
+    if err:
+        return None, err
 
     with _auth_lock:
-        if _cached_creds is None:
-            _cached_creds = _load_creds_from_disk()
-
-        if _cached_creds is None:
-            return None, "Not authenticated yet. Visit /api/folder/<id> once to trigger authentication."
-
-        if not _cached_creds.valid:
-            if _cached_creds.expired and _cached_creds.refresh_token:
-                try:
-                    _cached_creds.refresh(GoogleAuthRequest())
-                    _save_creds_to_disk(_cached_creds)
-                except Exception as e:
-                    return None, f"Token refresh failed: {e}"
-            else:
-                return None, "No valid credentials. Re-authentication required."
-
-        return _cached_creds.token, None
+        if _cached_service is None:
+            _cached_service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        return _cached_service, None
 
 
 def extract_folder_id(url: str) -> str:
@@ -117,9 +102,6 @@ def extract_folder_id(url: str) -> str:
 
 
 def get_folder_contents(service: Any, folder_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """
-    Paginates results and returns folders/videos separately.
-    """
     try:
         folders = []
         videos = []
@@ -137,6 +119,8 @@ def get_folder_contents(service: Any, folder_id: str) -> Tuple[Optional[Dict[str
                     orderBy="folder,name",
                     pageSize=1000,
                     pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
                 )
                 .execute()
             )
@@ -174,7 +158,11 @@ def get_folder_path(service: Any, folder_id: str) -> Tuple[Optional[list], Optio
     current_id = folder_id
     try:
         for _ in range(20):
-            file = service.files().get(fileId=current_id, fields="id,name,parents").execute()
+            file = (
+                service.files()
+                .get(fileId=current_id, fields="id,name,parents", supportsAllDrives=True)
+                .execute()
+            )
             path.insert(0, {"id": file["id"], "name": file["name"]})
             parents = file.get("parents", [])
             if not parents:
@@ -211,103 +199,100 @@ def get_folder(folder_id: str):
         return jsonify({"success": False, "error": error})
 
     path, _ = get_folder_path(service, folder_id)
-
     return jsonify({"success": True, "contents": contents, "path": path or []})
-
-
-@app.route("/api/video/<file_id>")
-def get_video_info(file_id: str):
-    service, error = get_drive_service()
-    if error:
-        return jsonify({"success": False, "error": error})
-
-    try:
-        file = (
-            service.files()
-            .get(fileId=file_id, fields="id,name,mimeType,size,videoMediaMetadata")
-            .execute()
-        )
-        return jsonify({"success": True, "file": file})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
 
 
 @app.route("/api/stream/<file_id>")
 def stream_video(file_id: str):
-    """
-    Faster/smoother streaming:
-    - Proxy the Drive download endpoint with requests(stream=True)
-    - Supports Range requests for seeking without buffering the whole file in memory
-    """
-    # Ensure we have a valid access token (this also refreshes if needed)
-    token, tok_err = _get_access_token()
-    if tok_err:
-        # Try to trigger auth if not done yet
-        service, err = get_drive_service()
-        if err:
-            return jsonify({"success": False, "error": err}), 500
-        token, tok_err = _get_access_token()
-        if tok_err:
-            return jsonify({"success": False, "error": tok_err}), 500
+    token, err = _get_access_token()
+    if err:
+        return jsonify({"success": False, "error": err}), 500
 
+    # Get metadata (size + mime type) for correct headers and range handling
     service, error = get_drive_service()
     if error:
         return jsonify({"success": False, "error": error}), 500
 
     try:
-        meta = service.files().get(fileId=file_id, fields="name,mimeType,size").execute()
+        meta = (
+            service.files()
+            .get(fileId=file_id, fields="size,mimeType", supportsAllDrives=True)
+            .execute()
+        )
+        file_size = int(meta.get("size", 0))
         mime_type = meta.get("mimeType", "video/mp4")
+    except Exception:
+        file_size = 0
+        mime_type = "video/mp4"
 
-        headers = {"Authorization": f"Bearer {token}"}
-        range_header = request.headers.get("Range")
-        if range_header:
-            headers["Range"] = range_header
+    headers = {"Authorization": f"Bearer {token}"}
 
-        # Drive v3 media download endpoint
-        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+    range_header = request.headers.get("Range")
+    if range_header:
+        headers["Range"] = range_header
+
+    url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+
+    upstream = requests.get(url, headers=headers, stream=True, timeout=60)
+
+    # If token was stale, refresh once and retry
+    if upstream.status_code == 401:
+        upstream.close()
+        token, err = _get_access_token()
+        if err:
+            return jsonify({"success": False, "error": err}), 500
+        headers["Authorization"] = f"Bearer {token}"
         upstream = requests.get(url, headers=headers, stream=True, timeout=60)
 
-        # If token expired mid-flight, try one refresh and retry once
-        if upstream.status_code == 401:
-            with _auth_lock:
-                if _cached_creds and _cached_creds.refresh_token:
-                    _cached_creds.refresh(GoogleAuthRequest())
-                    _save_creds_to_disk(_cached_creds)
-                    headers["Authorization"] = f"Bearer {_cached_creds.token}"
+    if upstream.status_code not in (200, 206):
+        # Return upstream error body for debugging (short)
+        text = ""
+        try:
+            text = upstream.text[:500]
+        except Exception:
+            pass
+        upstream.close()
+        return jsonify(
+            {"success": False, "error": f"Upstream error {upstream.status_code}", "details": text}
+        ), 500
+
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=1024 * 512):
+                if chunk:
+                    yield chunk
+        finally:
             upstream.close()
-            upstream = requests.get(url, headers=headers, stream=True, timeout=60)
 
-        def generate():
-            try:
-                for chunk in upstream.iter_content(chunk_size=1024 * 256):
-                    if chunk:
-                        yield chunk
-            finally:
-                upstream.close()
+    resp_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+    }
 
-        # Pass through key headers for video players
-        resp_headers = {}
-        for h in ["Content-Length", "Content-Range", "Accept-Ranges"]:
-            if h in upstream.headers:
-                resp_headers[h] = upstream.headers[h]
+    # Prefer upstream headers if present
+    for h in ["Content-Length", "Content-Range", "Accept-Ranges"]:
+        if h in upstream.headers:
+            resp_headers[h] = upstream.headers[h]
 
-        status_code = upstream.status_code
-        return Response(generate(), status=status_code, mimetype=mime_type, headers=resp_headers)
+    # If upstream didn't give length, but we know size and it's a full response
+    if "Content-Length" not in resp_headers and file_size and upstream.status_code == 200:
+        resp_headers["Content-Length"] = str(file_size)
 
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    return Response(generate(), status=upstream.status_code, mimetype=mime_type, headers=resp_headers)
 
+
+@app.route("/api/token")
+def token():
+    creds, err = _ensure_creds()
+    if err:
+        return jsonify({"success": False, "error": err}), 500
+
+    # Refresh if needed
+    if not creds.valid and creds.expired and creds.refresh_token:
+        creds.refresh(GoogleAuthRequest())
+        _save_creds_to_disk(creds)
+
+    return jsonify({"success": True, "access_token": creds.token})
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Google Drive Video Player")
-    print("=" * 60)
-    print("Starting server on http://localhost:5000")
-    print("Make sure you have:")
-    print("  1. Created a Google Cloud project")
-    print("  2. Enabled Google Drive API")
-    print("  3. Downloaded credentials.json to this directory")
-    print("First run will open a browser for authentication.")
-    print("=" * 60)
-
     app.run(debug=True, port=5000, threaded=True)

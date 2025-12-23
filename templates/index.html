@@ -154,6 +154,7 @@
             display: flex;
             gap: 15px;
             margin-top: 15px;
+            flex-wrap: wrap;
         }
 
         .control-btn {
@@ -304,7 +305,7 @@
 <body>
     <header>
         <div class="header-content">
-            <h1><span class="icon">🎥</span> GDrive Player</h1>
+            <h1><span class="icon">GDrive Player</span></h1>
             <div class="url-input-container">
                 <input type="text" id="folderUrl" placeholder="Paste Google Drive shared folder link here..." />
                 <button id="loadBtn" onclick="loadFolder()">Load Folder</button>
@@ -314,9 +315,9 @@
 
     <div class="container">
         <div id="breadcrumb" class="breadcrumb" style="display: none;"></div>
-        
+
         <div id="videoPlayer" class="video-player-container">
-            <video id="video" controls></video>
+            <video id="video" controls playsinline></video>
             <div class="video-info">
                 <div class="video-title" id="videoTitle">Video Title</div>
                 <div class="video-controls">
@@ -331,15 +332,15 @@
         </div>
 
         <div id="welcome" class="welcome">
-            <div class="welcome-icon">📁</div>
+            <div class="welcome-icon">Folder</div>
             <h2>Welcome to Google Drive Video Player</h2>
             <p>
-                Paste a shared Google Drive folder link above to start browsing and watching videos 
-                in a YouTube-like interface. Navigate through folders, stream videos directly, 
-                and enjoy full playback controls!
+                Paste a shared Google Drive folder link above to start browsing and watching videos
+                in a YouTube-like interface. Navigate through folders, play videos, and use playback
+                controls.
             </p>
             <p style="font-size: 14px; margin-top: 20px;">
-                💡 Tip: Make sure the Google Drive folder is shared with "Anyone with the link can view"
+                Tip: Make sure the Google Drive folder is shared with "Anyone with the link can view"
             </p>
         </div>
 
@@ -351,6 +352,25 @@
     <script>
         let currentFolderId = null;
         let currentVideos = [];
+        let cachedAccessToken = null;
+        let cachedAccessTokenAt = 0;
+
+        async function getAccessToken() {
+            const now = Date.now();
+            // Cache token for 5 minutes to avoid extra requests
+            if (cachedAccessToken && (now - cachedAccessTokenAt) < 5 * 60 * 1000) {
+                return cachedAccessToken;
+            }
+
+            const res = await fetch('/api/token');
+            const data = await res.json();
+            if (!data.success) {
+                throw new Error(data.error || 'Failed to get access token');
+            }
+            cachedAccessToken = data.access_token;
+            cachedAccessTokenAt = now;
+            return cachedAccessToken;
+        }
 
         async function loadFolder() {
             const url = document.getElementById('folderUrl').value.trim();
@@ -364,7 +384,6 @@
             document.getElementById('welcome').style.display = 'none';
 
             try {
-                // Parse the URL to get folder ID
                 const response = await fetch('/api/parse-link', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -421,7 +440,7 @@
             breadcrumb.style.display = 'flex';
             breadcrumb.innerHTML = path.map((item, index) => `
                 <span class="breadcrumb-item" onclick="loadFolderContents('${item.id}')">
-                    ${index === 0 ? '🏠' : ''} ${item.name}
+                    ${index === 0 ? 'Home' : escapeHtml(item.name)}
                 </span>
                 ${index < path.length - 1 ? '<span class="breadcrumb-separator">›</span>' : ''}
             `).join('');
@@ -440,7 +459,7 @@
                 if (item.type === 'folder') {
                     return `
                         <div class="file-item" onclick="loadFolderContents('${item.id}')">
-                            <div class="file-thumbnail">📁</div>
+                            <div class="file-thumbnail">Folder</div>
                             <div class="file-info">
                                 <div class="file-name">${escapeHtml(item.name)}</div>
                                 <div class="file-meta">Folder</div>
@@ -453,7 +472,7 @@
                     return `
                         <div class="file-item" onclick="playVideo('${item.id}', '${escapeHtml(item.name)}')">
                             <div class="file-thumbnail">
-                                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="${escapeHtml(item.name)}">` : '🎬'}
+                                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="${escapeHtml(item.name)}">` : 'Video'}
                                 <div class="play-icon">▶</div>
                             </div>
                             <div class="file-info">
@@ -466,19 +485,35 @@
             }).join('');
         }
 
-        function playVideo(videoId, videoName) {
+        async function playVideo(videoId, videoName) {
             const playerContainer = document.getElementById('videoPlayer');
             const video = document.getElementById('video');
             const title = document.getElementById('videoTitle');
 
-            playerContainer.classList.add('active');
-            title.textContent = videoName;
-            video.src = `/api/stream/${videoId}`;
-            video.load();
-            video.play();
+            showLoading(true);
+            hideError();
 
-            // Scroll to video player
-            playerContainer.scrollIntoView({behavior: 'smooth', block: 'start'});
+            try {
+                // Use the Flask backend stream endpoint which handles authentication
+                const mediaUrl = `/api/stream/${videoId}`;
+
+                playerContainer.classList.add('active');
+                title.textContent = videoName;
+
+                video.pause();
+                video.removeAttribute('src');
+                video.load();
+
+                video.src = mediaUrl;
+                video.load();
+                await video.play();
+
+                playerContainer.scrollIntoView({behavior: 'smooth', block: 'start'});
+            } catch (error) {
+                showError('Error playing video: ' + error.message);
+            } finally {
+                showLoading(false);
+            }
         }
 
         function changeSpeed(speed) {
@@ -498,7 +533,9 @@
         }
 
         function formatSize(bytes) {
-            const mb = bytes / (1024 * 1024);
+            const num = Number(bytes);
+            if (!Number.isFinite(num) || num <= 0) return '';
+            const mb = num / (1024 * 1024);
             if (mb > 1024) {
                 return `${(mb / 1024).toFixed(1)} GB`;
             }
@@ -507,7 +544,7 @@
 
         function escapeHtml(text) {
             const div = document.createElement('div');
-            div.textContent = text;
+            div.textContent = String(text ?? '');
             return div.innerHTML;
         }
 
@@ -525,18 +562,16 @@
             document.getElementById('loading').style.display = show ? 'block' : 'none';
         }
 
-        // Allow Enter key to load folder
         document.getElementById('folderUrl').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 loadFolder();
             }
         });
 
-        // Keyboard shortcuts for video
         document.addEventListener('keydown', (e) => {
             const video = document.getElementById('video');
             const playerContainer = document.getElementById('videoPlayer');
-            
+
             if (!playerContainer.classList.contains('active')) return;
 
             switch(e.key) {
@@ -559,7 +594,7 @@
                     video.volume = Math.max(0, video.volume - 0.1);
                     break;
                 case 'f':
-                    video.requestFullscreen();
+                    if (video.requestFullscreen) video.requestFullscreen();
                     break;
                 case 'm':
                     video.muted = !video.muted;
