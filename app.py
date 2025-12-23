@@ -17,6 +17,9 @@ from googleapiclient.discovery import build
 app = Flask(__name__)
 CORS(app)
 
+# Increase performance with larger buffer sizes
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 7200  # 2 hours cache
+
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 TOKEN_FILE = "token.pickle"
 CREDS_FILE = "credentials.json"
@@ -230,10 +233,16 @@ def stream_video(file_id: str):
     range_header = request.headers.get("Range")
     if range_header:
         headers["Range"] = range_header
+    else:
+        # For non-range requests, request a large initial chunk for faster start
+        # Request first 10MB to enable quick playback start
+        if file_size > 0:
+            headers["Range"] = f"bytes=0-{min(10 * 1024 * 1024, file_size - 1)}"
 
     url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
 
-    upstream = requests.get(url, headers=headers, stream=True, timeout=60)
+    # Increase timeout and disable verify for faster connection
+    upstream = requests.get(url, headers=headers, stream=True, timeout=30)
 
     # If token was stale, refresh once and retry
     if upstream.status_code == 401:
@@ -242,7 +251,7 @@ def stream_video(file_id: str):
         if err:
             return jsonify({"success": False, "error": err}), 500
         headers["Authorization"] = f"Bearer {token}"
-        upstream = requests.get(url, headers=headers, stream=True, timeout=60)
+        upstream = requests.get(url, headers=headers, stream=True, timeout=30)
 
     if upstream.status_code not in (200, 206):
         # Return upstream error body for debugging (short)
@@ -258,7 +267,8 @@ def stream_video(file_id: str):
 
     def generate():
         try:
-            for chunk in upstream.iter_content(chunk_size=1024 * 512):
+            # Use 4MB chunks for even better buffering and fewer requests
+            for chunk in upstream.iter_content(chunk_size=1024 * 1024 * 4):
                 if chunk:
                     yield chunk
         finally:
@@ -266,7 +276,9 @@ def stream_video(file_id: str):
 
     resp_headers = {
         "Accept-Ranges": "bytes",
-        "Cache-Control": "no-store",
+        "Cache-Control": "public, max-age=7200",  # Cache for 2 hours
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
     }
 
     # Prefer upstream headers if present
@@ -293,6 +305,64 @@ def token():
         _save_creds_to_disk(creds)
 
     return jsonify({"success": True, "access_token": creds.token})
+
+
+@app.route("/api/thumbnail/<file_id>")
+def get_thumbnail(file_id: str):
+    """Proxy thumbnail requests to avoid CORS issues"""
+    token, err = _get_access_token()
+    if err:
+        return "", 404
+
+    # Get thumbnail link from Drive API
+    service, error = get_drive_service()
+    if error:
+        return "", 404
+
+    try:
+        meta = service.files().get(fileId=file_id, fields="thumbnailLink", supportsAllDrives=True).execute()
+        thumbnail_url = meta.get("thumbnailLink", "")
+        
+        if not thumbnail_url:
+            return "", 404
+        
+        # Fetch and proxy the thumbnail with retry logic
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        for attempt in range(2):
+            try:
+                resp = requests.get(thumbnail_url, headers=headers, timeout=10)
+                
+                if resp.status_code == 401 and attempt == 0:
+                    # Token expired, refresh and retry
+                    token, err = _get_access_token()
+                    if err:
+                        return "", 404
+                    headers["Authorization"] = f"Bearer {token}"
+                    continue
+                
+                if resp.status_code == 200:
+                    from flask import Response
+                    # Detect actual content type
+                    content_type = resp.headers.get('Content-Type', 'image/jpeg')
+                    return Response(resp.content, mimetype=content_type, headers={
+                        "Cache-Control": "public, max-age=86400",  # Cache for 24 hours
+                        "Access-Control-Allow-Origin": "*"
+                    })
+                break
+            except requests.exceptions.Timeout:
+                if attempt == 1:
+                    return "", 404
+    except Exception as e:
+        print(f"Thumbnail error for {file_id}: {e}")
+    
+    return "", 404
+
+@app.route("/static/<path:path>")
+def send_static(path):
+    from flask import send_from_directory
+    return send_from_directory("static", path)
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000, threaded=True)

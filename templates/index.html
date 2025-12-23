@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Google Drive Video Player</title>
+    <!-- Video.js CSS -->
+    <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
     <style>
         * {
             margin: 0;
@@ -133,10 +135,35 @@
             display: block;
         }
 
-        video {
+        video,
+        .video-js {
             width: 100%;
             max-height: 70vh;
             display: block;
+            background: #000;
+        }
+
+        /* Video.js customization */
+        .video-js .vjs-big-play-button {
+            font-size: 3em;
+            line-height: 1.5em;
+            height: 1.5em;
+            width: 3em;
+            border-radius: 50%;
+            background-color: rgba(255, 0, 0, 0.9);
+            border: none;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .video-js .vjs-control-bar {
+            background-color: rgba(33, 33, 33, 0.95);
+        }
+
+        .video-js .vjs-play-progress,
+        .video-js .vjs-volume-level {
+            background-color: #ff0000;
         }
 
         .video-info {
@@ -317,17 +344,15 @@
         <div id="breadcrumb" class="breadcrumb" style="display: none;"></div>
 
         <div id="videoPlayer" class="video-player-container">
-            <video id="video" controls playsinline></video>
+            <video 
+                id="video" 
+                class="video-js vjs-big-play-centered vjs-fluid"
+                controls
+                playsinline
+                preload="auto">
+            </video>
             <div class="video-info">
                 <div class="video-title" id="videoTitle">Video Title</div>
-                <div class="video-controls">
-                    <button class="control-btn" onclick="changeSpeed(0.5)">0.5x</button>
-                    <button class="control-btn" onclick="changeSpeed(0.75)">0.75x</button>
-                    <button class="control-btn" onclick="changeSpeed(1)">Normal</button>
-                    <button class="control-btn" onclick="changeSpeed(1.25)">1.25x</button>
-                    <button class="control-btn" onclick="changeSpeed(1.5)">1.5x</button>
-                    <button class="control-btn" onclick="changeSpeed(2)">2x</button>
-                </div>
             </div>
         </div>
 
@@ -349,11 +374,27 @@
         <div id="fileGrid" class="file-grid"></div>
     </div>
 
+    <!-- Video.js JavaScript -->
+    <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
+    
     <script>
         let currentFolderId = null;
         let currentVideos = [];
         let cachedAccessToken = null;
         let cachedAccessTokenAt = 0;
+        let player = null;
+
+        // Preconnect to optimize initial connection
+        const preconnect = document.createElement('link');
+        preconnect.rel = 'preconnect';
+        preconnect.href = 'https://www.googleapis.com';
+        document.head.appendChild(preconnect);
+        
+        // DNS prefetch for even faster resolution
+        const dnsPrefetch = document.createElement('link');
+        dnsPrefetch.rel = 'dns-prefetch';
+        dnsPrefetch.href = 'https://www.googleapis.com';
+        document.head.appendChild(dnsPrefetch);
 
         async function getAccessToken() {
             const now = Date.now();
@@ -469,10 +510,22 @@
                 } else {
                     const duration = item.duration ? formatDuration(item.duration) : '';
                     const size = item.size ? formatSize(item.size) : '';
+                    
+                    // Use proxied thumbnail endpoint to avoid CORS issues
+                    const thumbnailUrl = item.thumbnail ? `/api/thumbnail/${item.id}` : '';
+                    
+                    // Create thumbnail HTML with fallback
+                    let thumbnailHtml = '';
+                    if (thumbnailUrl) {
+                        thumbnailHtml = `<img src="${thumbnailUrl}" alt="${escapeHtml(item.name)}" loading="lazy" onerror="this.onerror=null; this.style.display='none'; let icon=document.createElement('span'); icon.style.fontSize='48px'; icon.style.color='#666'; icon.textContent='📹'; this.parentElement.appendChild(icon);">`;
+                    } else {
+                        thumbnailHtml = '<span style="font-size:48px;color:#666;">📹</span>';
+                    }
+                    
                     return `
                         <div class="file-item" onclick="playVideo('${item.id}', '${escapeHtml(item.name)}')">
                             <div class="file-thumbnail">
-                                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="${escapeHtml(item.name)}">` : 'Video'}
+                                ${thumbnailHtml}
                                 <div class="play-icon">▶</div>
                             </div>
                             <div class="file-info">
@@ -487,38 +540,114 @@
 
         async function playVideo(videoId, videoName) {
             const playerContainer = document.getElementById('videoPlayer');
-            const video = document.getElementById('video');
             const title = document.getElementById('videoTitle');
 
             showLoading(true);
             hideError();
 
             try {
-                // Use the Flask backend stream endpoint which handles authentication
-                const mediaUrl = `/api/stream/${videoId}`;
-
                 playerContainer.classList.add('active');
                 title.textContent = videoName;
 
-                video.pause();
-                video.removeAttribute('src');
-                video.load();
+                // Use backend proxy for reliable streaming
+                const mediaUrl = `/api/stream/${videoId}`;
 
-                video.src = mediaUrl;
-                video.load();
-                await video.play();
+                // Dispose existing player if any
+                if (player) {
+                    try {
+                        player.dispose();
+                        player = null;
+                    } catch (e) {
+                        console.warn('Error disposing player:', e);
+                    }
+                }
+
+                // Wait a moment for DOM to be ready
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                // Get video element
+                const videoElement = document.getElementById('video');
+                if (!videoElement) {
+                    throw new Error('Video element not found');
+                }
+
+                // Initialize Video.js with optimized settings
+                player = videojs(videoElement, {
+                    controls: true,
+                    autoplay: true,
+                    preload: 'auto',
+                    fluid: false,
+                    responsive: true,
+                    playbackRates: [0.5, 0.75, 1, 1.25, 1.5, 2],
+                    html5: {
+                        vhs: {
+                            overrideNative: true,
+                            enableLowInitialPlaylist: true,
+                            smoothQualityChange: true,
+                            fastQualityChange: true
+                        },
+                        nativeAudioTracks: false,
+                        nativeVideoTracks: false
+                    },
+                    liveui: false,
+                    liveTracker: false
+                });
+
+                // Set source
+                player.src({
+                    src: mediaUrl,
+                    type: 'video/mp4'
+                });
+
+                // Event handlers
+                player.on('loadedmetadata', () => {
+                    console.log('Video metadata loaded');
+                    showLoading(false);
+                });
+
+                player.on('loadeddata', () => {
+                    console.log('Video data loaded');
+                });
+
+                player.on('canplay', () => {
+                    console.log('Video can play');
+                    showLoading(false);
+                });
+
+                player.on('playing', () => {
+                    console.log('Video playing');
+                    showLoading(false);
+                });
+
+                player.on('waiting', () => {
+                    console.log('Video buffering...');
+                    showLoading(true);
+                });
+
+                player.on('seeking', () => {
+                    console.log('Video seeking...');
+                });
+
+                player.on('seeked', () => {
+                    console.log('Video seek complete');
+                });
+
+                player.on('error', (e) => {
+                    const error = player.error();
+                    console.error('Video.js error:', error);
+                    showError('Video error: ' + (error ? error.message : 'Unknown error'));
+                    showLoading(false);
+                });
+
+                // Start loading
+                player.load();
 
                 playerContainer.scrollIntoView({behavior: 'smooth', block: 'start'});
             } catch (error) {
+                console.error('Error in playVideo:', error);
                 showError('Error playing video: ' + error.message);
-            } finally {
                 showLoading(false);
             }
-        }
-
-        function changeSpeed(speed) {
-            const video = document.getElementById('video');
-            video.playbackRate = speed;
         }
 
         function formatDuration(ms) {
@@ -569,35 +698,44 @@
         });
 
         document.addEventListener('keydown', (e) => {
-            const video = document.getElementById('video');
             const playerContainer = document.getElementById('videoPlayer');
 
-            if (!playerContainer.classList.contains('active')) return;
+            if (!playerContainer.classList.contains('active') || !player) return;
 
             switch(e.key) {
                 case ' ':
                     e.preventDefault();
-                    video.paused ? video.play() : video.pause();
+                    if (player.paused()) {
+                        player.play();
+                    } else {
+                        player.pause();
+                    }
                     break;
                 case 'ArrowLeft':
-                    video.currentTime -= 5;
+                    e.preventDefault();
+                    player.currentTime(player.currentTime() - 5);
                     break;
                 case 'ArrowRight':
-                    video.currentTime += 5;
+                    e.preventDefault();
+                    player.currentTime(player.currentTime() + 5);
                     break;
                 case 'ArrowUp':
                     e.preventDefault();
-                    video.volume = Math.min(1, video.volume + 0.1);
+                    player.volume(Math.min(1, player.volume() + 0.1));
                     break;
                 case 'ArrowDown':
                     e.preventDefault();
-                    video.volume = Math.max(0, video.volume - 0.1);
+                    player.volume(Math.max(0, player.volume() - 0.1));
                     break;
                 case 'f':
-                    if (video.requestFullscreen) video.requestFullscreen();
+                    if (player.isFullscreen()) {
+                        player.exitFullscreen();
+                    } else {
+                        player.requestFullscreen();
+                    }
                     break;
                 case 'm':
-                    video.muted = !video.muted;
+                    player.muted(!player.muted());
                     break;
             }
         });
